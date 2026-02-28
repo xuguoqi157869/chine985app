@@ -1,213 +1,233 @@
 import streamlit as st
+import os
 import pandas as pd
-import datetime
-from datetime import timedelta
+import matplotlib.pyplot as plt
+import networkx as nx
+from elasticsearch import Elasticsearch
+import jieba
+from datetime import datetime, timedelta
+import warnings
 
-# ====================== 页面基础配置 ======================
+# 忽略无关警告
+warnings.filterwarnings('ignore')
+# 解决matplotlib中文显示问题
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
+# -------------------------- 全局初始化与工具函数 --------------------------
+# 页面基础配置
 st.set_page_config(
-    page_title="985高校研究生院信息抓取平台",
-    page_icon="🎓",
-    layout="wide"  # 宽屏布局，适配多列展示
+    page_title="985高校研究生院信息智能系统",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# 自定义样式（美化页面）
-st.markdown("""
-<style>
-/* 美化卡片 */
-.stMetric {
-    background-color: #f0f2f6;
-    padding: 15px;
-    border-radius: 8px;
-}
-/* 详情卡片 */
-.detail-card {
-    background-color: #f8f9fa;
-    padding: 20px;
-    border-radius: 8px;
-    border-left: 4px solid #2188ff;
-}
-/* 新内容标签 */
-.new-tag {
-    color: #e74c3c;
-    font-weight: bold;
-}
-</style>
-""", unsafe_allow_html=True)
+# 手动配置基础参数（替代.env文件）
+os.environ["ES_HOST"] = "localhost"
+os.environ["ES_PORT"] = "9200"
+os.environ["ES_INDEX"] = "graduate_school_news"
+os.environ["TOTAL_SCHOOLS"] = "39"
+os.environ["CRAWL_CYCLE"] = "7"
 
-# ====================== 模拟后端数据（你只需替换成真实爬虫数据） ======================
-# 说明：后端爬虫需输出类似格式的DataFrame，字段如下：
-# - 高校名称：985高校名
-# - 网页标题：抓取的网页题目
-# - 发布时间：网页的发布时间（datetime格式）
-# - 网页URL：研究生院原始网址
-# - 本地存储路径：网页存本地的路径
-# - 标签：自定义标签（用逗号分隔）
-# - 是否新内容：判重结果（True=新网页，False=重复）
-# - 抓取时间：本次抓取的时间
-def get_mock_data():
-    # 985高校列表（示例）
-    universities = ["清华大学", "北京大学", "复旦大学", "上海交通大学", "浙江大学"]
-    # 模拟标签
-    tags = ["招生通知", "复试安排", "导师招聘", "学术讲座", "政策公告"]
-    # 生成模拟数据
-    data = []
-    for i in range(50):  # 模拟50条抓取记录
-        uni = universities[i % len(universities)]
-        tag = tags[i % len(tags)] + "," + tags[(i+1) % len(tags)]  # 多标签
-        publish_time = datetime.date.today() - timedelta(days=i % 30)
-        crawl_time = datetime.date.today() - timedelta(days=i % 7)  # 模拟每周抓取
-        is_new = True if i % 5 == 0 else False  # 每5条1条新内容
-        data.append({
-            "高校名称": uni,
-            "网页标题": f"{uni}研究生院{tag.split(',')[0]}-{i}",
-            "发布时间": publish_time,
-            "网页URL": f"https://gs.{uni.lower().replace(' ', '')}.edu.cn/{i}.html",
-            "本地存储路径": f"./data/{uni}/{publish_time}_{i}.html",
-            "标签": tag,
-            "是否新内容": is_new,
-            "抓取时间": crawl_time
-        })
-    df = pd.DataFrame(data)
-    # 格式转换（确保时间是日期格式）
-    df["发布时间"] = pd.to_datetime(df["发布时间"]).dt.date
-    df["抓取时间"] = pd.to_datetime(df["抓取时间"]).dt.date
-    return df
+# 初始化Elasticsearch连接（缓存连接）
+@st.cache_resource
+def init_es():
+    try:
+        es = Elasticsearch(hosts=[f"http://{os.getenv('ES_HOST')}:{os.getenv('ES_PORT')}"])
+        if es.ping():
+            st.toast("✅ 成功连接Elasticsearch数据库", icon="✅")
+            return es
+        else:
+            st.warning("⚠️ Elasticsearch连接失败，展示模拟数据", icon="⚠️")
+            return None
+    except Exception as e:
+        st.warning(f"⚠️ 数据库连接异常：{str(e)}，展示模拟数据", icon="⚠️")
+        return None
 
-# 加载数据（替换成：df = pd.read_csv("后端爬虫输出的csv文件")）
-df = get_mock_data()
-
-# ====================== 页面标题 & 核心指标概览 ======================
-st.title("🎓 985高校研究生院信息抓取平台")
-st.divider()
-
-# 核心指标（4列展示）
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("总抓取网页数", len(df))
-with col2:
-    st.metric("涉及985高校数", df["高校名称"].nunique())
-with col3:
-    st.metric("本次新抓取内容", len(df[df["是否新内容"] == True]))
-with col4:
-    # 计算下次抓取时间（每周一次，假设本周抓取日是周五）
-    next_crawl = datetime.date.today() + timedelta(days=(4 - datetime.date.today().weekday()) % 7)
-    st.metric("下次抓取时间", next_crawl.strftime("%Y-%m-%d"))
-
-st.divider()
-
-# ====================== 筛选栏（侧边栏） ======================
-st.sidebar.title("🔍 数据筛选")
-# 1. 高校筛选
-selected_uni = st.sidebar.multiselect(
-    "选择高校",
-    options=df["高校名称"].unique(),
-    default=df["高校名称"].unique()
-)
-# 2. 标签筛选
-all_tags = list(set([tag for tags in df["标签"].str.split(',') for tag in tags]))  # 拆分所有标签
-selected_tag = st.sidebar.multiselect(
-    "选择标签",
-    options=all_tags,
-    default=all_tags
-)
-# 3. 时间筛选
-min_date = df["发布时间"].min()
-max_date = df["发布时间"].max()
-date_range = st.sidebar.date_input(
-    "发布时间范围",
-    value=[min_date, max_date],
-    min_value=min_date,
-    max_value=max_date
-)
-# 4. 新内容筛选
-only_new = st.sidebar.checkbox("仅查看新抓取内容")
-
-# ====================== 应用筛选条件 ======================
-filtered_df = df.copy()
-# 高校筛选
-filtered_df = filtered_df[filtered_df["高校名称"].isin(selected_uni)]
-# 标签筛选（包含任一选中标签即可）
-filtered_df = filtered_df[filtered_df["标签"].apply(lambda x: any(tag in x for tag in selected_tag))]
-# 时间筛选
-if len(date_range) == 2:
-    filtered_df = filtered_df[
-        (filtered_df["发布时间"] >= date_range[0]) &
-        (filtered_df["发布时间"] <= date_range[1])
-    ]
-# 新内容筛选
-if only_new:
-    filtered_df = filtered_df[filtered_df["是否新内容"] == True]
-
-# ====================== 数据展示 ======================
-st.subheader("📋 抓取数据列表")
-# 导出按钮
-col_export, col_empty = st.columns([1, 9])
-with col_export:
-    # 导出筛选后的结果
-    csv_data = filtered_df.to_csv(index=False, encoding="utf-8-sig")
-    st.download_button(
-        label="📥 导出筛选结果",
-        data=csv_data,
-        file_name=f"985研究生院数据_{datetime.date.today()}.csv",
-        mime="text/csv"
-    )
-
-# 展示筛选后的数据表格（隐藏部分列，简化视图）
-show_columns = ["高校名称", "网页标题", "发布时间", "标签", "是否新内容"]
-st.dataframe(
-    filtered_df[show_columns].rename(columns={"是否新内容": "是否新抓取"}),
-    use_container_width=True,
-    column_config={
-        "发布时间": st.column_config.DateColumn("发布时间"),
-        "是否新抓取": st.column_config.CheckboxColumn("是否新抓取", disabled=True)
+# 数据查询函数（无ES时返回模拟数据）
+def query_es(es, condition=None):
+    # 模拟数据（无ES时展示）
+    mock_data = {
+        "高校名称": ["清华大学", "北京大学", "复旦大学", "上海交通大学", "浙江大学"],
+        "标题": [
+            "2025年硕士研究生招生复试工作安排",
+            "2025年推免生接收政策调整通知",
+            "研究生培养方案修订及实施细则",
+            "2025年博士招生申请考核制公告",
+            "研究生院关于学位授予工作的补充通知"
+        ],
+        "发布时间": [
+            "2025-02-20 10:00:00",
+            "2025-02-18 09:30:00",
+            "2025-02-15 14:20:00",
+            "2025-02-12 16:10:00",
+            "2025-02-10 09:00:00"
+        ],
+        "关键词": ["复试,招生,安排", "推免,政策,调整", "培养方案,修订", "博士招生,申请考核", "学位授予,补充通知"],
+        "原文链接": [
+            "https://yz.tsinghua.edu.cn",
+            "https://yz.pku.edu.cn",
+            "https://gs.fudan.edu.cn",
+            "https://yzb.sjtu.edu.cn",
+            "https://yzdzb.zju.edu.cn"
+        ],
+        "抓取时间": [
+            "2025-02-28 08:00:00",
+            "2025-02-28 08:05:00",
+            "2025-02-28 08:10:00",
+            "2025-02-28 08:15:00",
+            "2025-02-28 08:20:00"
+        ]
     }
-)
+    mock_df = pd.DataFrame(mock_data)
+    
+    # 有ES则查询真实数据，无则返回模拟数据
+    if not es:
+        return mock_df
+    
+    try:
+        query_body = {"match_all": {}} if not condition else condition
+        res = es.search(index=os.getenv('ES_INDEX'), query=query_body, size=1000)
+        data_list = []
+        for hit in res['hits']['hits']:
+            source = hit['_source']
+            data_list.append({
+                "高校名称": source.get("school_name", ""),
+                "标题": source.get("page_title", ""),
+                "发布时间": source.get("publish_time", ""),
+                "关键词": ",".join(source.get("keywords", [])),
+                "原文链接": source.get("url", ""),
+                "抓取时间": source.get("crawl_time", "")
+            })
+        df = pd.DataFrame(data_list)
+        # 时间格式化
+        if "发布时间" in df.columns:
+            df["发布时间"] = pd.to_datetime(df["发布时间"], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S').fillna("未知")
+        if "抓取时间" in df.columns:
+            df["抓取时间"] = pd.to_datetime(df["抓取时间"], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S').fillna("未知")
+        return df if not df.empty else mock_df
+    except Exception as e:
+        st.error(f"❌ 数据查询失败：{str(e)}", icon="❌")
+        return mock_df
 
-# ====================== 详情展示（选中某条数据） ======================
+# 生成知识图谱
+def generate_knowledge_graph(df):
+    if df.empty:
+        st.warning("⚠️ 无数据，无法生成知识图谱", icon="⚠️")
+        return
+    try:
+        G = nx.Graph()
+        # 添加节点和边
+        for _, row in df.iterrows():
+            school = row["高校名称"]
+            keywords = row["关键词"].split(",") if row["关键词"] else []
+            G.add_node(school, node_type="高校", size=1000)
+            for kw in keywords:
+                if kw and kw != "未知":
+                    G.add_node(kw, node_type="关键词", size=300)
+                    G.add_edge(school, kw, weight=1)
+        # 绘制图谱
+        fig, ax = plt.subplots(figsize=(12, 8))
+        pos = nx.spring_layout(G, k=0.8, iterations=20)
+        node_colors = ["#1f77b4" if G.nodes[n]["node_type"] == "高校" else "#ff7f0e" for n in G.nodes]
+        node_sizes = [G.nodes[n]["size"] for n in G.nodes]
+        nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors, node_size=node_sizes, alpha=0.8)
+        nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#cccccc", alpha=0.5)
+        nx.draw_networkx_labels(G, pos, ax=ax, font_size=8, font_family="SimHei")
+        ax.set_title("985高校研究生院信息知识图谱（高校-关键词关联）", fontsize=16, pad=20)
+        ax.axis("off")
+        plt.tight_layout()
+        st.pyplot(fig)
+    except Exception as e:
+        st.error(f"❌ 知识图谱生成失败：{str(e)}", icon="❌")
+
+# 初始化ES
+es = init_es()
+
+# -------------------------- 页面主体布局 --------------------------
+st.title("📚 985高校研究生院信息智能系统", anchor=False)
 st.divider()
-st.subheader("🔍 内容详情")
-# 选择要查看的记录
-selected_title = st.selectbox(
-    "选择要查看的网页标题",
-    options=filtered_df["网页标题"].tolist(),
-    index=0 if len(filtered_df) > 0 else None
-)
 
-if selected_title and len(filtered_df) > 0:
-    # 获取选中记录的详情
-    detail = filtered_df[filtered_df["网页标题"] == selected_title].iloc[0]
-    # 详情卡片
-    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
-    # 标题 + 新内容标签
-    title_html = f"<h4>{detail['网页标题']}</h4>"
-    if detail["是否新内容"]:
-        title_html += '<span class="new-tag">【新抓取内容】</span>'
-    st.markdown(title_html, unsafe_allow_html=True)
-    
-    # 详情信息（分2列展示）
-    col_left, col_right = st.columns(2)
-    with col_left:
-        st.write(f"**所属高校**：{detail['高校名称']}")
-        st.write(f"**发布时间**：{detail['发布时间']}")
-        st.write(f"**抓取时间**：{detail['抓取时间']}")
-        st.write(f"**标签**：{detail['标签']}")
-    with col_right:
-        st.write(f"**原始URL**：")
-        st.markdown(f'<a href="{detail["网页URL"]}" target="_blank">{detail["网页URL"]}</a>', unsafe_allow_html=True)
-        st.write(f"**本地存储路径**：{detail['本地存储路径']}")
-    
-    # 网页内容预览（模拟，实际可读取本地HTML文件）
-    st.write("---")
-    st.write("**网页内容预览**（本地文件）：")
-    st.info("提示：实际部署时，可读取本地HTML文件并展示内容，此处为模拟预览")
-    st.text_area(
-        "",
-        value=f"【模拟内容】{detail['网页标题']} 的本地网页内容...",
-        height=200,
-        disabled=True
+# 顶部导航栏（原生Streamlit按钮，替代option_menu）
+col1, col2, col3 = st.columns(3)
+with col1:
+    tab_selected = st.radio(
+        "功能选择",
+        ["数据总览", "关键词搜索", "知识图谱"],
+        horizontal=True,
+        label_visibility="collapsed"
     )
-    st.markdown('</div>', unsafe_allow_html=True)
 
-# ====================== 底部提示 ======================
+# -------------------------- 功能1：数据总览 --------------------------
+if tab_selected == "数据总览":
+    st.subheader("📊 高校研究生院数据总览", anchor=False)
+    col_data, col_stats = st.columns([3, 1])
+    
+    # 侧边筛选
+    with st.sidebar:
+        st.header("🔍 数据筛选")
+        school_list = ["全部"] + list(query_es(es)["高校名称"].unique())
+        selected_school = st.selectbox("选择高校", school_list, index=0)
+        time_range = st.slider("发布时间范围（近N天）", 7, 90, 30)
+        selected_kw = st.text_input("输入关键词筛选", placeholder="如：招生、复试、调剂")
+    
+    # 构建筛选条件
+    must_conditions = []
+    if selected_school != "全部":
+        must_conditions.append({"match": {"school_name": selected_school}})
+    if selected_kw:
+        must_conditions.append({"match": {"keywords": selected_kw}})
+    time_ago = (datetime.now() - timedelta(days=time_range)).strftime('%Y-%m-%d')
+    must_conditions.append({"range": {"publish_time": {"gte": time_ago, "format": "yyyy-MM-dd"}}})
+    query_condition = {"bool": {"must": must_conditions}} if must_conditions else None
+    
+    # 展示数据和统计
+    df_data = query_es(es, query_condition)
+    with col_data:
+        st.dataframe(
+            df_data,
+            column_config={"原文链接": st.column_config.LinkColumn("原文链接", display_text="查看原文")},
+            hide_index=True,
+            use_container_width=True
+        )
+    with col_stats:
+        st.metric("📈 总数据条数", len(df_data))
+        st.metric("🏫 涉及高校数", df_data["高校名称"].nunique())
+        st.metric("🔑 关键词数", len(set(','.join(df_data["关键词"].tolist()).split(','))))
+        st.metric("📅 爬取周期", f"{os.getenv('CRAWL_CYCLE')}天/次")
+
+# -------------------------- 功能2：关键词搜索 --------------------------
+if tab_selected == "关键词搜索":
+    st.subheader("🔍 关键词精准搜索", anchor=False)
+    search_kw = st.text_input("输入搜索关键词（支持多关键词空格分隔）", placeholder="招生 复试 保研 分数线")
+    search_btn = st.button("开始搜索", type="primary")
+    
+    if search_btn and search_kw:
+        kw_list = search_kw.split()
+        must_conditions = [{"match": {"keywords": kw}} for kw in kw_list]
+        query_condition = {"bool": {"must": must_conditions}}
+        df_search = query_es(es, query_condition)
+        st.dataframe(
+            df_search,
+            column_config={"原文链接": st.column_config.LinkColumn("原文链接", display_text="查看原文")},
+            hide_index=True,
+            use_container_width=True
+        )
+        st.caption(f"共找到 {len(df_search)} 条相关数据")
+    elif search_btn and not search_kw:
+        st.warning("⚠️ 请输入搜索关键词", icon="⚠️")
+
+# -------------------------- 功能3：知识图谱 --------------------------
+if tab_selected == "知识图谱":
+    st.subheader("🗺️ 知识图谱（高校-关键词关联）", anchor=False)
+    st.caption("💡 图谱中蓝色节点为高校，橙色节点为关键词，节点大小代表关联度")
+    df_kg = query_es(es)
+    generate_knowledge_graph(df_kg)
+
+# -------------------------- 页面底部 --------------------------
 st.divider()
-st.caption(f"📢 数据更新至：{datetime.date.today()} | 下次自动抓取时间：{next_crawl.strftime('%Y-%m-%d')}")
+with st.footer():
+    st.markdown("### 📌 项目说明")
+    st.markdown(f"本系统为985高校研究生院信息智能分析平台，覆盖{os.getenv('TOTAL_SCHOOLS')}所985高校，爬虫抓取周期{os.getenv('CRAWL_CYCLE')}天/次 | 技术栈：Streamlit + Elasticsearch + NetworkX + Matplotlib")
+    st.markdown("© 2025 985高校研究生院信息智能系统项目组")

@@ -10,8 +10,8 @@ import warnings
 
 # 忽略无关警告
 warnings.filterwarnings('ignore')
-# 解决matplotlib中文显示问题
-plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+# 适配云端的字体配置（解决中文乱码）
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'SimHei', 'WenQuanYi Micro Hei']
 plt.rcParams['axes.unicode_minus'] = False
 
 # -------------------------- 全局初始化与工具函数 --------------------------
@@ -23,14 +23,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 手动配置基础参数（替代.env文件）
+# 手动配置基础参数
 os.environ["ES_HOST"] = "localhost"
 os.environ["ES_PORT"] = "9200"
 os.environ["ES_INDEX"] = "graduate_school_news"
 os.environ["TOTAL_SCHOOLS"] = "39"
 os.environ["CRAWL_CYCLE"] = "7"
 
-# 初始化Elasticsearch连接（缓存连接）
+# 初始化Elasticsearch连接
 @st.cache_resource
 def init_es():
     try:
@@ -47,7 +47,7 @@ def init_es():
 
 # 数据查询函数（无ES时返回模拟数据）
 def query_es(es, condition=None):
-    # 模拟数据（无ES时展示）
+    # 模拟数据
     mock_data = {
         "高校名称": ["清华大学", "北京大学", "复旦大学", "上海交通大学", "浙江大学"],
         "标题": [
@@ -82,7 +82,6 @@ def query_es(es, condition=None):
     }
     mock_df = pd.DataFrame(mock_data)
     
-    # 有ES则查询真实数据，无则返回模拟数据
     if not es:
         return mock_df
     
@@ -134,7 +133,7 @@ def generate_knowledge_graph(df):
         node_sizes = [G.nodes[n]["size"] for n in G.nodes]
         nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors, node_size=node_sizes, alpha=0.8)
         nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#cccccc", alpha=0.5)
-        nx.draw_networkx_labels(G, pos, ax=ax, font_size=8, font_family="SimHei")
+        nx.draw_networkx_labels(G, pos, ax=ax, font_size=8)
         ax.set_title("985高校研究生院信息知识图谱（高校-关键词关联）", fontsize=16, pad=20)
         ax.axis("off")
         plt.tight_layout()
@@ -149,7 +148,7 @@ es = init_es()
 st.title("📚 985高校研究生院信息智能系统", anchor=False)
 st.divider()
 
-# 顶部导航栏（原生Streamlit按钮，替代option_menu）
+# 顶部导航栏
 col1, col2, col3 = st.columns(3)
 with col1:
     tab_selected = st.radio(

@@ -1,0 +1,8 @@
+# 核心依赖（解决matplotlib等报错）
+streamlit
+pandas
+matplotlib
+networkx
+jieba
+elasticsearch
+python-dotenv

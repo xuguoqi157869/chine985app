@@ -224,9 +224,24 @@ if tab_selected == "知识图谱":
     df_kg = query_es(es)
     generate_knowledge_graph(df_kg)
 
-# -------------------------- 页面底部 --------------------------
+# -------------------------- 页面底部（兼容所有Streamlit版本） --------------------------
 st.divider()
-with st.footer():
+# 用列布局模拟页脚，替代st.footer()（旧版本不支持）
+footer_col = st.columns(1)[0]
+with footer_col:
     st.markdown("### 📌 项目说明")
     st.markdown(f"本系统为985高校研究生院信息智能分析平台，覆盖{os.getenv('TOTAL_SCHOOLS')}所985高校，爬虫抓取周期{os.getenv('CRAWL_CYCLE')}天/次 | 技术栈：Streamlit + Elasticsearch + NetworkX + Matplotlib")
     st.markdown("© 2025 985高校研究生院信息智能系统项目组")
+# 调整页脚样式（可选，让效果更接近原生footer）
+st.markdown(
+    """
+    <style>
+    div[data-testid="column"]:last-child {
+        border-top: 1px solid #eee;
+        padding-top: 1rem;
+        margin-top: 2rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
